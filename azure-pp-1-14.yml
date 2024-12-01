@@ -1,0 +1,239 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+ 
+trigger:
+  none
+ 
+pool:
+  #vmImage: ubuntu-latest
+  name: "pool1"
+ 
+stages:
+# Stage 1: Git Clone
+- stage: GitClone
+  displayName: "Clone Repository"
+  jobs:
+  - job: CloneJob
+    displayName: "Clone Git Repository"
+    steps:
+    - checkout: self
+      displayName: "Checkout Source Code"
+ 
+- stage: SetupAnsibleAndInventory
+  displayName: "Install Ansible and Update Inventory"
+  jobs:
+  
+  # Job 1: Install Ansible
+  - job: InstallAnsibleJob
+    displayName: "Install Ansible"
+    steps:
+    - script: |
+        # Step 1: Update system and install epel-release and Ansible
+        sudo dnf -y update
+        sudo dnf -y install epel-release
+        sudo dnf -y install ansible
+        
+        # Verify Ansible installation
+        ansible --version
+      displayName: "Install epel-release and Ansible"
+ 
+  # Job 2: Update Inventory File
+  - job: UpdateInventoryJob
+    displayName: "Update Ansible Inventory File"
+    dependsOn: InstallAnsibleJob
+    steps:
+    - script: |
+        echo "Capturing IP address..."
+        ipAddress=$(ip a show eth0 | grep inet | grep -v inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+        echo "IP Address: $ipAddress"
+        
+        inventoryFile="/etc/ansible/hosts"
+        if ! grep -q "$ipAddress" "$inventoryFile"; then
+          echo "Adding IP address to inventory file..."
+          echo "[Controller]" | sudo tee -a "$inventoryFile"
+          echo "$ipAddress" | sudo tee -a "$inventoryFile"
+        else
+          echo "IP address $ipAddress already exists in the inventory file. Skipping update."
+        fi
+        
+        echo "Updated inventory file:"
+        cat "$inventoryFile"
+ 
+- stage: RunAnsiblePlaybook 
+  displayName: "Run Ansible Playbook to Install Terraform"
+  dependsOn: SetupAnsibleAndInventory
+  jobs:
+  - job: InstallTerraform
+    steps:
+    - script: |
+        echo "Running Ansible playbook to install Terraform..."
+        ansible-playbook install_terraform.yml
+ 
+- stage: TerraformOperation
+  displayName: "Terraform init, plan and apply"
+  dependsOn: RunAnsiblePlaybook
+  jobs:
+  - job: TerraformOps
+    steps:
+    - script: |
+        echo "Initiating and applying terraform configuration"
+        cd Terraform
+        terraform init -force-copy
+        terraform plan
+        terraform apply -auto-approve
+  
+- stage: ApprovalStage
+  displayName: "Approval Stage"
+  dependsOn: TerraformOperation
+  pool:
+    name: pool2
+  jobs:
+  - deployment: ManualApproval
+    displayName: "Approval for Maven Build"
+    environment: PostTerraformApproval 
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "Approval granted. Proceeding to Maven Build stage."
+            displayName: "Approval Confirmed"
+ 
+- stage: GitCloneRepo
+  displayName: "Clone Repository"
+  dependsOn: ApprovalStage
+  pool:
+    name: pool2
+  jobs:
+  - job: CloneJob
+    displayName: "Clone Git Repository"
+    steps:
+    - checkout: self
+      displayName: "Checkout Source Code"
+ 
+ 
+- stage: MavenBuild
+  displayName: "Maven Build"
+  dependsOn: GitCloneRepo
+  pool:
+    name: pool2
+  jobs:
+  - job: MavenBuildJob
+    displayName: "Maven Build Job"
+    steps:
+    - task: Maven@4
+      inputs:
+        azureSubscription: 'fullaccessportal'
+        mavenPomFile: 'pom.xml'
+        goals: 'clean package'
+        publishJUnitResults: true
+        javaHomeOption: 'JDKVersion'
+        jdkVersionOption: 'default'
+        mavenVersionOption: 'Default'
+        mavenAuthenticateFeed: false
+        effectivePomSkip: false
+        sonarQubeRunAnalysis: false
+      displayName: Build Project with Maven
+ 
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(System.DefaultWorkingDirectory)/target/'
+        ArtifactName: 'target'
+        publishLocation: 'Container'
+ 
+- stage: ApprovalStage2
+  displayName: "Approval Stage 2"
+  dependsOn: MavenBuild
+  pool:
+    name: pool2
+  jobs:
+  - deployment: ManualApproval
+    displayName: "Approval for Docker Compose Up"
+    environment: DockerComposeApproval 
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "Approval granted. Proceeding to Docker Compose Up stage."
+            displayName: "Approval Confirmed"
+ 
+- stage: DockerCompose
+  displayName: docker compose
+  dependsOn: ApprovalStage2
+  pool:
+    name: "pool2" 
+  jobs:
+  - job: DockerComposeUP
+    steps:
+    - task: DownloadBuildArtifacts@0
+      inputs:
+        buildType: 'current'
+        downloadType: 'single' 
+        artifactName: 'target'
+        downloadPath: '$(System.DefaultWorkingDirectory)/' 
+      
+    - task: DockerCompose@1
+      inputs:
+        containerregistrytype: 'Azure Container Registry'
+        azureSubscription: 'fullaccessportal'
+        dockerComposeFile: '$(System.DefaultWorkingDirectory)/docker-compose.yml'
+        action: 'Run a Docker Compose command'
+        dockerComposeCommand: 'up -d'
+ 
+- stage: Test_Docker  
+  dependsOn: DockerCompose
+  pool:
+    name: "pool2" 
+  jobs:
+  - job: Test_Docker 
+    displayName: Test_Docker
+    steps:
+    - script: | 
+        curl localhost:8000/hello
+ 
+- stage: ApprovalStage3
+  displayName: "Approval Stage 3"
+  dependsOn: Test_Docker
+  pool:
+    name: pool2
+  jobs:
+  - deployment: ManualApproval
+    displayName: "Approval for Destroy"
+    environment: TerraformDestroyApproval 
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "Approval granted. Proceeding to Terraform Destroy stage."
+            displayName: "Approval Confirmed"
+  
+- stage: TerraformDestroy
+  displayName: "Terraform Destroy"
+  dependsOn: ApprovalStage3
+  pool:
+    name: pool1
+  jobs:
+  - job: Terraform_Destroy
+    displayName: "Destroying the Terraform"
+    steps:
+    
+    - task: TerraformTaskV4@4
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform'
+        backendServiceArm: 'fullaccessportal'
+        backendAzureRmResourceGroupName: 'RG-Backup-TF'
+        backendAzureRmStorageAccountName: 'tfbackupsa'
+        backendAzureRmContainerName: 'tfbackupcontainer'
+        backendAzureRmKey: 'terraform.tfstate'
+    - task: TerraformTaskV4@4
+      inputs:
+        provider: 'azurerm'
+        command: 'destroy'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform/'
+        environmentServiceNameAzureRM: 'fullaccessportal'
