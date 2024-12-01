@@ -1,0 +1,27 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- script: echo Hello, world!
+  displayName: 'Run a one-line script'
+
+- script: |
+    echo Add other tasks to build, test, and deploy your project.
+    echo See https://aka.ms/yaml
+    mkdir fold1
+    cd fold1
+    wget https://vstsagentpackage.azureedge.net/agent/4.248.0/vsts-agent-linux-x64-4.248.0.tar.gz
+    tar zxvf ./vsts-agent-linux-x64-4.248.0.tar.gz
+    ./config.sh --unattended --url https://dev.azure.com/gouravazuree2 --auth pat --token $(token) --pool pool2 --agent agent1 --replace
+  displayName: 'Run a multi-line script'
+
+
+./config.sh --unattended --url https://dev.azure.com/
