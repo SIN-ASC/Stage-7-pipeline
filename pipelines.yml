@@ -1,0 +1,115 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+ 
+trigger:
+  none
+ 
+pool:
+  vmImage: ubuntu-latest
+  name: "pool1"
+ 
+stages:
+- stage: SCMCheckout
+  displayName: Checkout Code
+  jobs:
+  - job: git_clone 
+    displayName: Clone Git Repository
+    steps:
+    - checkout: self
+ 
+- stage: InstallEpelAndAnsible
+  displayName: Install EPEL-Release and Ansible
+  dependsOn: SCMCheckout
+  jobs:
+  - job: Install_ansible
+    steps:
+    - script: |
+        echo "Installing EPEL-Release and Ansible..."
+        sudo dnf update -y
+        sudo dnf install epel-release
+        sudo dnf install ansible
+        ansible --version
+ 
+  - job: CaptureAndUpdate
+    dependsOn: Install_ansible
+    steps:
+    - script: |
+        echo "Capturing IP address..."
+        ipAddress=$(ip a show eth0 | grep inet | grep -v inet6 | awk '{print $2}' | cut -d'/' -f1 | head -n 1)
+        echo "IP Address: $ipAddress"
+        
+        inventoryFile="/etc/ansible/hosts"
+        if ! grep -q "$ipAddress" "$inventoryFile"; then
+          echo "Adding IP address to inventory file..."
+          echo "[Controller]" | sudo tee -a "$inventoryFile"
+          echo "$ipAddress" | sudo tee -a "$inventoryFile"
+        else
+          echo "IP address $ipAddress already exists in the inventory file. Skipping update."
+        fi
+        
+        echo "Updated inventory file:"
+        cat "$inventoryFile"
+
+- stage: InstallTerraform
+  displayName: Install Terraform using Ansible
+  dependsOn: InstallEpelAndAnsible
+  jobs:
+  - job: InstallTerraform
+    steps:
+    - script: |
+        echo "Running Ansible playbook to install Terraform..."
+        ansible-playbook install_terraform.yml
+ 
+- stage: TerraformOperations
+  displayName: Terraform Init, Plan, and Apply
+  dependsOn: InstallTerraform
+  jobs:
+  - job: TerraformOps
+    steps:
+    - script: |
+        echo "Initializing and applying Terraform configuration..."
+        cd Terraform
+        terraform init -force-copy
+        terraform plan
+        terraform apply -auto-approve
+ 
+- stage: SCMCheckout2
+  displayName: Checkout Code
+  dependsOn: TerraformOperations
+  pool:
+    vmImage: ubuntu-latest
+    name: "pool2" 
+  jobs:
+  - job: git_clone 
+    displayName: Clone Git Repository
+    steps:
+    - checkout: self
+ 
+- stage: MavenBuild_docker_compose
+  displayName: Maven Build
+  dependsOn: SCMCheckout2
+  pool:
+    vmImage: ubuntu-latest
+    name: "pool2" 
+  jobs:
+  - job: MavenBuildJob
+    steps:
+    - script: |
+        echo "Running Maven build..."
+        mvn clean install
+        sudo docker compose up -d
+        sudo docker ps 
+ 
+- stage: Test_Docker  
+  dependsOn: MavenBuild_docker_compose
+  pool:
+    vmImage: ubuntu-latest
+    name: "pool2" 
+  jobs:
+  - job: Test_Docker 
+    displayName: Test_Docker
+    steps:
+    - script: | 
+        curl localhost:8000/hello
