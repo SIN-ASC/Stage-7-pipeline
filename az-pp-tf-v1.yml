@@ -1,0 +1,39 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+  name: pool1
+
+steps:
+- script: echo Hello, world!
+  displayName: 'Run a one-line script'
+
+- script: |
+    echo Add other tasks to build, test, and deploy your project.
+    echo See https://aka.ms/yaml
+  displayName: 'Run a multi-line script'
+
+- task: TerraformTaskV4@4
+  inputs:
+    provider: 'azurerm'
+    command: 'init'
+    workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform'
+    backendAzureRmUseEntraIdForAuthentication: false
+    backendServiceArm: 'fullaccessportal'
+    backendAzureRmResourceGroupName: 'RG-Backup-TF'
+    backendAzureRmStorageAccountName: 'tfbackupsa'
+    backendAzureRmContainerName: 'tfbackupcontainer'
+    backendAzureRmKey: 'terraform.tfstate'
+
+- task: TerraformTaskV4@4
+  inputs:
+    provider: 'azurerm'
+    command: 'plan'
+    workingDirectory: '$(System.DefaultWorkingDirectory)/Terraform'
+    environmentServiceNameAzureRM: 'fullaccessportal'
